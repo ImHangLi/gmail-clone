@@ -80,7 +80,7 @@ export function EmailDetailView({
   // This ensures the newest email is always expanded.
   useEffect(() => {
     if (emailsInThread && emailsInThread.length > 0) {
-      setExpandedEmails(prev => {
+      setExpandedEmails((prev) => {
         const newExpanded = new Set(prev);
         // Ensure the last email is expanded when data loads or changes
         const lastEmail = emailsInThread[emailsInThread.length - 1];
@@ -140,10 +140,10 @@ export function EmailDetailView({
           return (
             <div
               key={emailContent.id}
-              className="mb-4 last:mb-0 rounded-md border border-gray-200 bg-gray-50 overflow-hidden"
+              className={`mb-4 overflow-hidden rounded-md border border-gray-200 last:mb-0 ${isExpanded ? 'bg-white' : 'bg-gray-50'}`}
             >
               <div
-                className="flex items-center justify-between p-4 cursor-pointer bg-white hover:bg-gray-100"
+                className="flex cursor-pointer items-center justify-between bg-white p-4 hover:bg-gray-100"
                 onClick={() => toggleExpand(emailContent.id)}
               >
                 <div className="flex-grow">
@@ -151,22 +151,27 @@ export function EmailDetailView({
                     {emailContent.subject ?? "(No Subject)"}
                   </h2>
                   <p className="text-sm text-gray-600">
-                    From: {emailContent.from} | Date: {emailContent.receivedAt.toLocaleString()}
+                    From: {emailContent.from} | Date:{" "}
+                    {emailContent.receivedAt.toLocaleString()}
                   </p>
                   {!isExpanded && (
-                    <p className="text-xs text-gray-500 mt-1 truncate">
+                    <p className="mt-1 truncate text-xs text-gray-500">
                       {emailContent.snippet}
                     </p>
                   )}
                 </div>
                 <Button variant="ghost" size="icon">
-                  {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                  {isExpanded ? (
+                    <ChevronUp className="h-4 w-4" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4" />
+                  )}
                 </Button>
               </div>
 
               {isExpanded && (
-                <div className="p-4 border-t border-gray-200 bg-white">
-                  <div className="space-y-2 text-sm text-gray-600 mb-4">
+                <div className="border-t border-gray-200 bg-gray-50 p-4">
+                  <div className="mb-4 space-y-2 text-sm text-gray-600">
                     <p>
                       <strong>To:</strong> {emailContent.to}
                     </p>
@@ -179,7 +184,9 @@ export function EmailDetailView({
 
                   {emailContent.attachments.length > 0 && (
                     <div className="mt-4 mb-4">
-                      <strong className="text-sm text-gray-600">Attachments:</strong>
+                      <strong className="text-sm text-gray-600">
+                        Attachments:
+                      </strong>
                       <ul className="mt-2 space-y-1">
                         {emailContent.attachments.map((att, attIndex) => (
                           <li key={attIndex} className="text-sm text-gray-500">
@@ -191,12 +198,9 @@ export function EmailDetailView({
                     </div>
                   )}
 
-                  <div className="email-content border-t border-gray-100 pt-4">
-                    {emailContent.bodyS3Url ? (
-                      <div
-                        className="prose max-w-none"
-                        dangerouslySetInnerHTML={{ __html: emailContent.bodyS3Url }}
-                      />
+                  <div className="email-content h-auto border-t border-gray-100 pt-4">
+                    {emailContent.htmlBody ? (
+                      <SafeHtmlRenderer html={emailContent.htmlBody} />
                     ) : (
                       <div className="rounded bg-gray-50 p-4 font-mono text-sm whitespace-pre-wrap">
                         {emailContent.snippet ?? "No content available"}
@@ -214,6 +218,19 @@ export function EmailDetailView({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function SafeHtmlRenderer({ html }: { html: string }) {
+  return (
+    <div className="h-full w-full">
+      <iframe
+        srcDoc={html}
+        sandbox="allow-same-origin"
+        className="h-full w-full border-none"
+        style={{ minHeight: "480px" }}
+      />
     </div>
   );
 }

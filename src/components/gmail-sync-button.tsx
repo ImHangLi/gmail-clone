@@ -16,6 +16,7 @@ export function GmailSyncButton() {
         description: `Successfully synced ${data.count} new emails`,
       });
       void utils.email.getThreadList.invalidate();
+      void utils.email.getThreadById.invalidate();
     },
     onError: (error) => {
       if (error.data?.code === "UNAUTHORIZED") {

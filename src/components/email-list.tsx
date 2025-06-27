@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, Fragment } from "react";
+import { useState, useEffect, Fragment, useRef } from "react";
 import { useDebounce } from "~/hooks/use-debounce";
 import { api } from "~/trpc/react";
 import { EmailDetailView } from "./email-detail";
@@ -10,8 +10,8 @@ import EmailListSkeleton from "./email-skeleton";
 
 export function EmailList() {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
-
   const [searchTerm, setSearchTerm] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const debouncedSearchTerm = useDebounce(searchTerm, 800);
 
   const {
@@ -34,6 +34,25 @@ export function EmailList() {
   useEffect(() => {
     void utils.email.getThreadList.invalidate();
   }, [debouncedSearchTerm, utils.email.getThreadList]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === "f") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      } else if (event.key === "Escape") {
+        setSearchTerm("");
+        searchInputRef.current?.blur();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
 
   const markAsRead = api.email.markAsRead.useMutation({
     onSuccess: () => {
@@ -91,14 +110,17 @@ export function EmailList() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Inbox</h1>
-          <div className="text-sm text-gray-600">{allThreads.length} threads</div>
+          <div className="text-sm text-gray-600">
+            {allThreads.length} threads
+          </div>
         </div>
         <Input
+          ref={searchInputRef}
           type="text"
           placeholder="Search emails..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
-          className="max-w-sm"
+          className="w-full max-w-sm transition-all duration-200 focus:ring-2 focus:ring-blue-500"
         />
       </div>
 

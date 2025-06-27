@@ -3,6 +3,8 @@ import { desc, eq, and, asc, or, ilike } from "drizzle-orm";
 import { attachment, email } from "~/server/db/schema";
 import { z } from "zod";
 import { syncMessagesForUser } from "~/lib/gmail";
+import { s3 } from "~/lib/s3";
+import { GetObjectCommand } from "@aws-sdk/client-s3";
 
 const EMAILS_PER_PAGE = 25;
 
@@ -120,12 +122,30 @@ export const emailRouter = createTRPCRouter({
             const attachments = await ctx.db.query.attachment.findMany({
               where: eq(attachment.emailId, emailRecord.id),
             });
+
+            let bodyContent = "";
+            if (emailRecord.bodyS3Url) {
+              try {
+                bodyContent = await downloadEmailBodyFromS3(
+                  emailRecord.bodyS3Url,
+                );
+              } catch (s3Error) {
+                console.error(
+                  `Failed to download S3 content for email ${emailRecord.id}:`,
+                  s3Error,
+                );
+                bodyContent =
+                  "<p>Error loading email content from S3.</p>";
+              }
+            }
+
             return {
               ...emailRecord,
               attachments: attachments.map((att) => ({
                 ...att,
                 size: parseInt(att.size, 10),
               })),
+              htmlBody: bodyContent, // Add htmlBody to the returned object
             };
           }),
         );
@@ -168,3 +188,23 @@ export const emailRouter = createTRPCRouter({
       }
     }),
 });
+
+// Helper to download email body from S3
+async function downloadEmailBodyFromS3(s3Url: string): Promise<string> {
+  const url = new URL(s3Url);
+  const bucketName = url.hostname.split('.')[0]; // Assumes bucket name is first part of hostname
+  const key = url.pathname.substring(1); // Remove leading slash
+
+  const command = new GetObjectCommand({
+    Bucket: bucketName,
+    Key: key,
+  });
+
+  const response = await s3.send(command);
+
+  if (!response.Body) {
+    throw new Error("S3 object body is empty");
+  }
+
+  return response.Body.transformToString();
+}
