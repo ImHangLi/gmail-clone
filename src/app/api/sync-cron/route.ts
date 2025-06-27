@@ -6,7 +6,8 @@ import { syncMessagesForUser } from "~/lib/gmail";
 
 export async function GET(request: NextRequest) {
   const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  console.log(authHeader);
+  if (authHeader !== `${process.env.CRON_SECRET}`) {
     return new NextResponse("Unauthorized", { status: 401 });
   }
 
