@@ -1,12 +1,10 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "~/lib/auth";
-import { api, HydrateClient } from "~/trpc/server";
+import { HydrateClient } from "~/trpc/server";
 import { EmailList } from "~/components/email-list";
 import { DashboardLayout } from "~/components/dashboard-layout";
-import { Suspense } from "react";
 import { ErrorBoundary } from "react-error-boundary";
-import EmailListSkeleton from "~/components/email-skeleton";
 
 export default async function Home() {
   const session = await auth.api.getSession({
@@ -16,19 +14,13 @@ export default async function Home() {
     redirect("/login");
   }
 
-  void api.email.getThreadList.prefetchInfinite({
-    cursor: 0,
-  });
-
   return (
     <HydrateClient>
       <DashboardLayout>
         <div className="flex h-full flex-col">
           <div className="min-h-0 flex-1">
             <ErrorBoundary fallback={<div>Error loading emails</div>}>
-              <Suspense fallback={<EmailListSkeleton />}>
-                <EmailList />
-              </Suspense>
+              <EmailList />
             </ErrorBoundary>
           </div>
         </div>

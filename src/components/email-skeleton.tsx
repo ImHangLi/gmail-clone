@@ -1,6 +1,8 @@
+"use client";
+
 import { Skeleton } from "./ui/skeleton";
 
-export default async function EmailListSkeleton() {
+export default function EmailListSkeleton() {
   return (
     <div className="flex h-full flex-col space-y-6 p-4">
       <div className="flex items-center justify-between">
@@ -8,9 +10,9 @@ export default async function EmailListSkeleton() {
           <h1 className="text-2xl font-bold text-gray-900">
             <Skeleton className="h-8 w-32" />
           </h1>
-          <p className="text-sm text-gray-600">
+          <div className="text-sm text-gray-600">
             <Skeleton className="mt-1 h-4 w-48" />
-          </p>
+          </div>
         </div>
       </div>
 
