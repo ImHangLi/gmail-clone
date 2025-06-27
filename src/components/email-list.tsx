@@ -1,29 +1,61 @@
 "use client";
 
 import { useState, useEffect, Fragment } from "react";
+import { useDebounce } from "~/hooks/use-debounce";
 import { api } from "~/trpc/react";
 import { EmailDetailView } from "./email-detail";
 import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import EmailListSkeleton from "./email-skeleton";
 
 export function EmailList() {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
 
-  const [data, { fetchNextPage, hasNextPage, isFetchingNextPage }] =
-    api.email.getThreadList.useSuspenseInfiniteQuery(
-      {},
-      {
-        getNextPageParam: (lastPage) => lastPage.nextCursor,
-        refetchOnWindowFocus: false,
-      },
-    );
+  const [searchTerm, setSearchTerm] = useState("");
+  const debouncedSearchTerm = useDebounce(searchTerm, 800);
+
+  const {
+    data,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isLoading,
+    error,
+  } = api.email.getThreadList.useInfiniteQuery(
+    { search: debouncedSearchTerm },
+    {
+      getNextPageParam: (lastPage) => lastPage.nextCursor,
+      refetchOnWindowFocus: false,
+    },
+  );
 
   const utils = api.useUtils();
+
+  useEffect(() => {
+    void utils.email.getThreadList.invalidate();
+  }, [debouncedSearchTerm, utils.email.getThreadList]);
+
   const markAsRead = api.email.markAsRead.useMutation({
     onSuccess: () => {
       void utils.email.getThreadList.invalidate();
       void utils.email.getThreadById.invalidate(); // Invalidate thread detail as well
     },
   });
+
+  // Handle loading state
+  if (isLoading) {
+    return <EmailListSkeleton />;
+  }
+
+  // Handle error state
+  if (error) {
+    return (
+      <div className="py-12 text-center">
+        <p className="mb-4 text-red-600">Failed to load emails</p>
+        <p className="text-sm text-gray-500">{error.message}</p>
+      </div>
+    );
+  }
 
   if (!data || data.pages.length === 0) {
     return (
@@ -59,10 +91,15 @@ export function EmailList() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Inbox</h1>
-          <p className="text-sm text-gray-600">
-            {allThreads.length} threads synced
-          </p>
+          <div className="text-sm text-gray-600">{allThreads.length} threads</div>
         </div>
+        <Input
+          type="text"
+          placeholder="Search emails..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          className="max-w-sm"
+        />
       </div>
 
       <div className="flex-1 overflow-hidden rounded-sm border border-gray-200 bg-white">

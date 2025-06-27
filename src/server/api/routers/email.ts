@@ -1,5 +1,5 @@
 import { createTRPCRouter, protectedProcedure } from "../trpc";
-import { desc, eq, and, asc } from "drizzle-orm";
+import { desc, eq, and, asc, or, ilike } from "drizzle-orm";
 import { attachment, email } from "~/server/db/schema";
 import { z } from "zod";
 import { syncMessagesForUser } from "~/lib/gmail";
@@ -11,6 +11,7 @@ export const emailRouter = createTRPCRouter({
     .input(
       z.object({
         cursor: z.number().min(0).nullish(),
+        search: z.string().nullish(),
       }),
     )
     .query(async ({ ctx, input }) => {
@@ -38,7 +39,21 @@ export const emailRouter = createTRPCRouter({
             createdAt: email.createdAt,
           })
           .from(email)
-          .where(eq(email.userId, ctx.session.user.id))
+          .where(
+            and(
+              eq(email.userId, ctx.session.user.id),
+              input.search
+                ? or(
+                    ilike(email.subject, `%${input.search}%`),
+                    ilike(email.from, `%${input.search}%`),
+                    ilike(email.to, `%${input.search}%`),
+                    ilike(email.cc, `%${input.search}%`),
+                    ilike(email.bcc, `%${input.search}%`),
+                    ilike(email.snippet, `%${input.search}%`),
+                  )
+                : undefined,
+            ),
+          )
           .orderBy(email.threadId, desc(email.receivedAt))
           .as("latest_emails_in_thread");
 
