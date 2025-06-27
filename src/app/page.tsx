@@ -6,6 +6,7 @@ import { EmailList } from "~/components/email-list";
 import { DashboardLayout } from "~/components/dashboard-layout";
 import { Suspense } from "react";
 import { ErrorBoundary } from "react-error-boundary";
+import EmailListSkeleton from "~/components/email-skeleton";
 
 export default async function Home() {
   const session = await auth.api.getSession({
@@ -25,7 +26,7 @@ export default async function Home() {
         <div className="flex h-full flex-col">
           <div className="min-h-0 flex-1">
             <ErrorBoundary fallback={<div>Error loading emails</div>}>
-              <Suspense fallback={<div>Loading...</div>}>
+              <Suspense fallback={<EmailListSkeleton />}>
                 <EmailList />
               </Suspense>
             </ErrorBoundary>
