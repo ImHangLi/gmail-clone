@@ -1,11 +1,17 @@
 import { useState, useEffect } from "react";
 import { Button } from "./ui/button";
 import { api } from "~/trpc/react";
-import { AlertCircle, RefreshCw, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  AlertCircle,
+  RefreshCw,
+  ChevronDown,
+  ChevronUp,
+  Reply,
+  Forward,
+} from "lucide-react";
 import { EmailDetailSkeleton } from "./email-detail-skeleton";
 import { AttachmentButton } from "./attachment-button";
-
-
+import { EmailComposer } from "./email-composer";
 
 function EmailDetailError({
   onBack,
@@ -62,16 +68,13 @@ export function EmailDetailView({
     },
   );
 
-  // State to manage which emails are expanded.
   const [expandedEmails, setExpandedEmails] = useState<Set<string>>(new Set());
+  const [replyingTo, setReplyingTo] = useState<string | null>(null);
 
-  // Update expandedEmails when emailsInThread changes (e.g., after refetch)
-  // This ensures the newest email is always expanded.
   useEffect(() => {
     if (emailsInThread && emailsInThread.length > 0) {
       setExpandedEmails((prev) => {
         const newExpanded = new Set(prev);
-        // Ensure the last email is expanded when data loads or changes
         const lastEmail = emailsInThread[emailsInThread.length - 1];
         if (lastEmail) {
           newExpanded.add(lastEmail.id);
@@ -91,6 +94,18 @@ export function EmailDetailView({
       }
       return newExpanded;
     });
+  };
+
+  const extractEmailAddress = (from: string): string => {
+    const match = /<([^>]+)>/.exec(from);
+    return match ? (match[1] ?? "") : from;
+  };
+
+  const formatSubject = (subject: string): string => {
+    if (subject.startsWith("Re:")) {
+      return subject;
+    }
+    return `Re: ${subject}`;
   };
 
   if (isLoading) {
@@ -126,10 +141,12 @@ export function EmailDetailView({
       <div className="rounded-lg border border-gray-200 bg-white p-8 shadow-sm">
         {emailsInThread.map((emailContent) => {
           const isExpanded = expandedEmails.has(emailContent.id);
+          const isReplying = replyingTo === emailContent.id;
+
           return (
             <div
               key={emailContent.id}
-              className={`mb-4 overflow-hidden rounded-md border border-gray-200 last:mb-0 ${isExpanded ? 'bg-white' : 'bg-gray-50'}`}
+              className={`mb-4 overflow-hidden rounded-md border border-gray-200 last:mb-0 ${isExpanded ? "bg-white" : "bg-gray-50"}`}
             >
               <div
                 className="flex cursor-pointer items-center justify-between bg-white p-4 hover:bg-gray-100"
@@ -195,9 +212,29 @@ export function EmailDetailView({
                   </div>
 
                   <div className="mt-6 flex space-x-2">
-                    <Button variant="outline">Reply</Button>
-                    <Button variant="outline">Forward</Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => setReplyingTo(emailContent.id)}
+                    >
+                      <Reply className="mr-2 h-4 w-4" />
+                      Reply
+                    </Button>
+                    <Button variant="outline">
+                      <Forward className="mr-2 h-4 w-4" />
+                      Forward
+                    </Button>
                   </div>
+
+                  {isReplying && (
+                    <div className="mt-4">
+                      <EmailComposer
+                        to={extractEmailAddress(emailContent.from ?? "")}
+                        subject={formatSubject(emailContent.subject ?? "")}
+                        threadId={emailContent.threadId}
+                        onClose={() => setReplyingTo(null)}
+                      />
+                    </div>
+                  )}
                 </div>
               )}
             </div>

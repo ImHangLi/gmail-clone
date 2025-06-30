@@ -346,3 +346,60 @@ function formatAddress(
     )
     .join(", ");
 }
+
+export async function sendMessage(
+  userId: string,
+  options: {
+    to: string;
+    from: string;
+    subject: string;
+    body: string;
+    threadId?: string; // For threading replies
+  },
+) {
+  const userAccount = await db.query.account.findFirst({
+    where: and(eq(account.userId, userId), eq(account.providerId, "google")),
+  });
+
+  if (!userAccount) {
+    throw new Error("No Google account found for user to send message from.");
+  }
+
+  const { gmail } = await createGmailClient(userAccount);
+
+  // Construct the raw email
+  const emailLines = [
+    `From: ${options.from}`,
+    `To: ${options.to}`,
+    `Subject: ${options.subject}`,
+    "Content-Type: text/html; charset=utf-8",
+    "",
+    options.body,
+  ];
+  const email = emailLines.join("\n");
+
+  const base64EncodedEmail = Buffer.from(email).toString("base64url");
+
+  const requestBody: gmail_v1.Params$Resource$Users$Messages$Send = {
+    userId: "me",
+    requestBody: {
+      raw: base64EncodedEmail,
+    },
+  };
+
+  // If it's a reply, we need to include the threadId to keep it in the same thread
+  if (options.threadId) {
+    requestBody.requestBody!.threadId = options.threadId;
+  }
+
+  const response = await gmail.users.messages.send(requestBody);
+
+  if (!response.data) {
+    throw new Error("Failed to send email.");
+  }
+
+  // TODO: Maybe change this to optimistic update? or wait for the push notification implementation.
+  void syncMessagesForUser(userId);
+
+  return response.data;
+}

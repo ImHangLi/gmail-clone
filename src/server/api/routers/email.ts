@@ -1,8 +1,8 @@
 import { createTRPCRouter, protectedProcedure } from "../trpc";
 import { eq, and } from "drizzle-orm";
-import { email } from "~/server/db/schema";
+import { email, user } from "~/server/db/schema";
 import { z } from "zod";
-import { syncMessagesForUser } from "~/lib/gmail";
+import { syncMessagesForUser, sendMessage } from "~/lib/gmail";
 
 export const emailRouter = createTRPCRouter({
   // Sync latest emails from Gmail
@@ -44,6 +44,36 @@ export const emailRouter = createTRPCRouter({
       } catch (error) {
         console.error("Failed to mark email as read:", error);
         throw new Error("Failed to mark email as read.");
+      }
+    }),
+
+  sendMessage: protectedProcedure
+    .input(
+      z.object({
+        to: z.string().email(),
+        subject: z.string(),
+        body: z.string(),
+        threadId: z.string().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      try {
+        const fromUser = await ctx.db.query.user.findFirst({
+          where: eq(user.id, ctx.session.user.id),
+        });
+
+        if (!fromUser?.email) {
+          throw new Error("Could not find user email to send from.");
+        }
+
+        const result = await sendMessage(ctx.session.user.id, {
+          ...input,
+          from: fromUser.email,
+        });
+        return { success: true, messageId: result.id };
+      } catch (error) {
+        console.error("Failed to send email:", error);
+        throw new Error("Failed to send email.");
       }
     }),
 });
