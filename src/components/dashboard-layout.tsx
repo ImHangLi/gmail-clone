@@ -30,7 +30,7 @@ function DashboardContent({ children, title = "Inbox" }: DashboardLayoutProps) {
   return (
     <SidebarInset>
       <header
-        className={`flex h-16 shrink-0 items-center gap-2 border-b px-4 ${
+        className={`sticky top-0 z-10 bg-white flex h-16 shrink-0 items-center gap-2 border-b px-4 ${
           open ? "max-w-[calc(100vw-256px)]" : "max-w-[100vw]"
         }`}
       >
