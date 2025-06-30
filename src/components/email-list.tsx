@@ -21,7 +21,7 @@ export function EmailList() {
     isFetchingNextPage,
     isLoading,
     error,
-  } = api.email.getThreadList.useInfiniteQuery(
+  } = api.thread.getThreadList.useInfiniteQuery(
     { search: debouncedSearchTerm },
     {
       getNextPageParam: (lastPage) => lastPage.nextCursor,
@@ -32,8 +32,8 @@ export function EmailList() {
   const utils = api.useUtils();
 
   useEffect(() => {
-    void utils.email.getThreadList.invalidate();
-  }, [debouncedSearchTerm, utils.email.getThreadList]);
+    void utils.thread.getThreadList.invalidate();
+  }, [debouncedSearchTerm, utils.thread.getThreadList]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -56,8 +56,8 @@ export function EmailList() {
 
   const markAsRead = api.email.markAsRead.useMutation({
     onSuccess: () => {
-      void utils.email.getThreadList.invalidate();
-      void utils.email.getThreadById.invalidate(); // Invalidate thread detail as well
+      void utils.thread.getThreadList.invalidate();
+      void utils.thread.getThreadById.invalidate(); // Invalidate thread detail as well
     },
   });
 
@@ -139,7 +139,7 @@ export function EmailList() {
                   onClick={() => handleThreadClick(thread)}
                   onMouseEnter={() => {
                     if (thread.threadId) {
-                      void utils.email.getThreadById.prefetch({
+                      void utils.thread.getThreadById.prefetch({
                         threadId: thread.threadId,
                       });
                     }

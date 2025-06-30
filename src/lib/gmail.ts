@@ -1,10 +1,13 @@
-import { google } from "googleapis";
+"use server";
+
+import { google, type gmail_v1 } from "googleapis";
 import { type ParsedMail, simpleParser, type AddressObject } from "mailparser";
 import { db } from "~/server/db";
 import { account, email, attachment } from "~/server/db/schema";
-import { and, desc, eq } from "drizzle-orm";
-import { s3 } from "./s3";
+import { and, eq, inArray } from "drizzle-orm";
+import { s3 } from "./s3-client";
 import { DeleteObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import type { account as Account } from "~/server/db/schema";
 
 interface GmailMessage {
   id: string;
@@ -12,6 +15,7 @@ interface GmailMessage {
   snippet: string;
   raw: string;
   internalDate: string;
+  historyId: string;
 }
 
 export interface FinalEmail {
@@ -33,162 +37,231 @@ export interface FinalEmail {
   }>;
 }
 
-// Sync messages for a user
+// Main function to sync messages for a user
 export async function syncMessagesForUser(userId: string) {
-  const lastSyncedEmail = await db.query.email.findFirst({
-    where: eq(email.userId, userId),
-    orderBy: [desc(email.receivedAt)],
+  const userAccount = await db.query.account.findFirst({
+    where: and(eq(account.userId, userId), eq(account.providerId, "google")),
   });
 
-  const messages = await fetchMessages(userId, {
-    since: lastSyncedEmail?.receivedAt,
-    allPages: true,
-    maxResults: 500,
-  });
-
-  const allGmailMessageIds = await fetchAllGmailMessageIds(userId);
-  const localEmailRecords = await db.query.email.findMany({
-    where: eq(email.userId, userId),
-    columns: { gmailId: true, bodyS3Url: true },
-  });
-
-  const gmailIdSet = new Set(allGmailMessageIds.map((msg) => msg.id));
-
-  const deletedEmailRecords = localEmailRecords.filter(
-    (rec) => !gmailIdSet.has(rec.gmailId),
-  );
-
-  for (const deletedEmail of deletedEmailRecords) {
-    console.log(`Deleting email ${deletedEmail.gmailId} from DB and S3.`);
-    await db.delete(email).where(eq(email.gmailId, deletedEmail.gmailId));
-    if (deletedEmail.bodyS3Url) {
-      try {
-        await deleteEmailBodyFromS3(deletedEmail.bodyS3Url);
-      } catch (s3DeleteError) {
-        console.error(
-          `Failed to delete S3 object for email ${deletedEmail.gmailId}:`,
-          s3DeleteError,
-        );
-      }
-    }
+  if (!userAccount) {
+    throw new Error("No Google account found for user to sync.");
   }
 
-  const syncedEmails = [];
+  const { gmail } = await createGmailClient(userAccount);
 
+  // If there's no historyId, this is the first sync.
+  // We'll fetch all messages and set the initial historyId.
+  if (!userAccount.historyId) {
+    return await performInitialSync(userId, gmail);
+  } else {
+    return await performIncrementalSync(userId, userAccount, gmail);
+  }
+}
+
+async function performInitialSync(userId: string, gmail: gmail_v1.Gmail) {
+  console.log(`Performing initial sync for user ${userId}`);
+  const allMessages = await fetchAllMessages(gmail);
+  const newEmails = await processAndStoreMessages(userId, allMessages);
+
+  // After the first sync, get the latest history ID to use for future incremental syncs
+  const profile = await gmail.users.getProfile({ userId: "me" });
+  const newHistoryId = profile.data.historyId;
+
+  if (newHistoryId) {
+    await db
+      .update(account)
+      .set({ historyId: newHistoryId })
+      .where(eq(account.userId, userId));
+    console.log(`Initial sync complete. Set historyId to ${newHistoryId}`);
+  }
+
+  return { added: newEmails, removed: [] };
+}
+
+async function performIncrementalSync(
+  userId: string,
+  userAccount: typeof Account.$inferSelect,
+  gmail: gmail_v1.Gmail,
+) {
+  console.log(
+    `Performing incremental sync for user ${userId} from historyId ${userAccount.historyId}`,
+  );
+  const history = await fetchHistory(gmail, userAccount.historyId!);
+
+  if (!history.history) {
+    console.log("No new history found.");
+    return { added: [], removed: [] };
+  }
+
+  const messagesAdded = history.history
+    .flatMap((h) => h.messagesAdded ?? [])
+    .filter((ma) => ma.message?.id)
+    .map((ma) => ma.message!);
+
+  const idsDeleted = history.history
+    .flatMap((h) => h.messagesDeleted ?? [])
+    .map((md) => md.message?.id)
+    .filter((id): id is string => !!id);
+
+  // Process deletions
+  const removedEmails = await processDeletions(idsDeleted);
+
+  // Process additions
+  const addedMessages = await fetchMessagesByIds(
+    gmail,
+    messagesAdded.map((m) => m.id!),
+  );
+  const newEmails = await processAndStoreMessages(userId, addedMessages);
+
+  // Update history ID
+  const newHistoryId = history.historyId;
+  if (newHistoryId) {
+    await db
+      .update(account)
+      .set({ historyId: newHistoryId.toString() })
+      .where(eq(account.id, userAccount.id));
+    console.log(`Incremental sync complete. New historyId is ${newHistoryId}`);
+  }
+
+  return { added: newEmails, removed: removedEmails };
+}
+
+// Data Processing Helpers
+async function processAndStoreMessages(
+  userId: string,
+  messages: GmailMessage[],
+) {
+  const syncedEmails = [];
   for (const message of messages) {
     const existingEmail = await db.query.email.findFirst({
       where: eq(email.gmailId, message.id),
     });
 
-    if (!existingEmail) {
-      const parsed = await parseRawMessage(message);
+    if (existingEmail) continue;
 
-      let bodyS3Url: string | undefined;
-      try {
-        if (parsed.htmlBody) {
-          bodyS3Url = await uploadEmailBodyToS3(
-            userId,
-            parsed.gmailId,
-            parsed.htmlBody,
-          );
-        }
-      } catch (error) {
-        console.error("Failed to upload email body to S3:", error);
-      }
+    const parsed = await parseRawMessage(message);
+    const bodyS3Url = await uploadEmailBodyToS3(
+      userId,
+      parsed.gmailId,
+      parsed.htmlBody,
+    );
 
-      const [newEmail] = await db
-        .insert(email)
-        .values({
-          userId,
-          gmailId: parsed.gmailId,
-          threadId: parsed.threadId,
-          subject: parsed.subject,
-          from: parsed.from,
-          to: parsed.to,
-          cc: parsed.cc,
-          bcc: parsed.bcc,
-          snippet: parsed.snippet,
-          bodyS3Url: bodyS3Url, // Store S3 URL
-          receivedAt: parsed.receivedAt,
-        })
-        .returning();
+    const [newEmail] = await db
+      .insert(email)
+      .values({
+        userId,
+        gmailId: parsed.gmailId,
+        threadId: parsed.threadId,
+        subject: parsed.subject,
+        from: parsed.from,
+        to: parsed.to,
+        cc: parsed.cc,
+        bcc: parsed.bcc,
+        snippet: parsed.snippet,
+        bodyS3Url: bodyS3Url,
+        receivedAt: parsed.receivedAt,
+      })
+      .returning();
 
-      if (newEmail && parsed.attachments.length > 0) {
-        const attachmentValues = parsed.attachments.map((att) => ({
-          emailId: newEmail.id,
-          filename: att.filename,
-          contentType: att.contentType,
-          size: att.size.toString(),
-        }));
-        await db.insert(attachment).values(attachmentValues);
-      }
+    if (newEmail && parsed.attachments.length > 0) {
+      const attachmentValues = parsed.attachments.map((att) => ({
+        emailId: newEmail.id,
+        filename: att.filename,
+        contentType: att.contentType,
+        size: att.size.toString(),
+      }));
+      await db.insert(attachment).values(attachmentValues);
+    }
 
-      if (newEmail) {
-        syncedEmails.push({
-          ...newEmail,
-          attachments: parsed.attachments,
-        });
-      }
+    if (newEmail) {
+      syncedEmails.push({ ...newEmail, attachments: parsed.attachments });
     }
   }
   return syncedEmails;
 }
 
-async function uploadEmailBodyToS3(
-  userId: string,
-  gmailId: string,
-  htmlBody: string,
-): Promise<string> {
-  const bucketName = process.env.S3_BUCKET_NAME;
-  if (!bucketName) {
-    throw new Error("S3_BUCKET_NAME is not defined");
-  }
+async function processDeletions(gmailIds: string[]) {
+  if (gmailIds.length === 0) return [];
 
-  const key = `emails/${userId}/${gmailId}.html`;
-  const command = new PutObjectCommand({
-    Bucket: bucketName,
-    Key: key,
-    Body: htmlBody,
-    ContentType: "text/html",
+  const deletedDbRecords = await db.query.email.findMany({
+    where: inArray(email.gmailId, gmailIds),
+    columns: { id: true, gmailId: true, bodyS3Url: true },
   });
 
-  await s3.send(command);
+  if (deletedDbRecords.length === 0) return [];
 
-  // Construct the S3 URL. This might vary based on your S3 setup (e.g., custom domain, region).
-  // For simplicity, using a path-style URL here. Adjust if you use virtual-hosted style or CloudFront.
-  return `https://${bucketName}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+  // Delete from S3
+  for (const record of deletedDbRecords) {
+    if (record.bodyS3Url) {
+      await deleteEmailBodyFromS3(record.bodyS3Url);
+    }
+  }
+
+  // Delete from DB
+  await db.delete(email).where(inArray(email.gmailId, gmailIds));
+  console.log(`Deleted ${deletedDbRecords.length} emails from DB and S3.`);
+
+  return deletedDbRecords;
 }
 
-async function deleteEmailBodyFromS3(s3Url: string) {
-  const bucketName = process.env.S3_BUCKET_NAME;
-  if (!bucketName) {
-    throw new Error("S3_BUCKET_NAME is not defined");
-  }
+// Gmail API Fetching Helpers
+async function fetchAllMessages(gmail: gmail_v1.Gmail) {
+  let pageToken: string | undefined;
+  const allMessageIds: { id: string; threadId: string }[] = [];
+  do {
+    const response = await gmail.users.messages.list({
+      userId: "me",
+      maxResults: 500,
+      pageToken,
+    });
+    const messages = response.data.messages ?? [];
+    for (const msg of messages) {
+      if (msg.id && msg.threadId) {
+        allMessageIds.push({ id: msg.id, threadId: msg.threadId });
+      }
+    }
+    pageToken = response.data.nextPageToken ?? undefined;
+  } while (pageToken);
 
-  const url = new URL(s3Url);
-  const key = url.pathname.substring(1); // Remove leading slash
-
-  const command = new DeleteObjectCommand({
-    Bucket: bucketName,
-    Key: key,
-  });
-
-  await s3.send(command);
+  return fetchMessagesByIds(
+    gmail,
+    allMessageIds.map((m) => m.id),
+  );
 }
 
-// Helper to create and configure a Gmail API client
-async function createGmailClient(userId: string) {
-  // Get Google account from db
-  const userAccount = await db.query.account.findFirst({
-    where: and(eq(account.userId, userId), eq(account.providerId, "google")),
-  });
+async function fetchMessagesByIds(gmail: gmail_v1.Gmail, ids: string[]) {
+  if (ids.length === 0) return [];
+  const messagePromises = ids.map((id) =>
+    gmail.users.messages.get({ userId: "me", id, format: "raw" }),
+  );
+  const results = await Promise.allSettled(messagePromises);
 
-  if (!userAccount?.accessToken) {
-    throw new Error("No Google account found for user");
+  // Extract successful messages from the settled promises
+  const successfulMessages: gmail_v1.Schema$Message[] = [];
+  for (const result of results) {
+    if (result.status === "fulfilled" && result.value.data) {
+      successfulMessages.push(result.value.data);
+    }
   }
 
-  if (!userAccount.refreshToken) {
-    throw new Error("No refresh token found for user");
+  // Filter out any messages that don't have the required properties and cast to GmailMessage
+  return successfulMessages
+    .filter((d): d is gmail_v1.Schema$Message => !!d)
+    .map((d) => d as GmailMessage);
+}
+
+async function fetchHistory(gmail: gmail_v1.Gmail, startHistoryId: string) {
+  const response = await gmail.users.history.list({
+    userId: "me",
+    startHistoryId,
+  });
+  return response.data;
+}
+
+// Gmail Client and Auth
+async function createGmailClient(userAccount: typeof Account.$inferSelect) {
+  if (!userAccount.accessToken || !userAccount.refreshToken) {
+    throw new Error("Missing tokens for Gmail client");
   }
 
   const auth = new google.auth.OAuth2({
@@ -202,157 +275,34 @@ async function createGmailClient(userId: string) {
     refresh_token: userAccount.refreshToken,
   });
 
+  // Automatically update tokens if they are refreshed.
   auth.on("tokens", (tokens) => {
     void (async () => {
       try {
-        if (tokens.refresh_token) {
-          await db
-            .update(account)
-            .set({
-              refreshToken: tokens.refresh_token,
-              updatedAt: new Date(),
-            })
-            .where(eq(account.userId, userId));
-
-          console.log("Refresh tokens updated in db:", tokens);
-        }
+        const updatePayload: Partial<typeof Account.$inferSelect> = {
+          updatedAt: new Date(),
+        };
         if (tokens.access_token) {
-          await db
-            .update(account)
-            .set({
-              accessToken: tokens.access_token,
-              updatedAt: new Date(),
-            })
-            .where(eq(account.userId, userId));
-
-          console.log("Access tokens updated in db:", tokens);
+          updatePayload.accessToken = tokens.access_token;
         }
+        if (tokens.refresh_token) {
+          updatePayload.refreshToken = tokens.refresh_token;
+        }
+        await db
+          .update(account)
+          .set(updatePayload)
+          .where(eq(account.id, userAccount.id));
       } catch (error) {
-        console.error("Failed to update tokens:", error);
+        console.error("Failed to update tokens in db:", error);
       }
     })();
   });
 
-  const gmail = google.gmail({ version: "v1", auth });
-  return { gmail, auth };
+  return { gmail: google.gmail({ version: "v1", auth }), auth };
 }
 
-// Helper to format email addresses
-function formatAddress(
-  addressData: AddressObject | AddressObject[] | undefined,
-): string {
-  if (!addressData) return "";
-  const addresses = Array.isArray(addressData) ? addressData : [addressData];
-  return addresses
-    .flatMap((addrObj) => addrObj.value || [])
-    .map((addr) =>
-      addr.name ? `${addr.name} <${addr.address ?? ""}>` : (addr.address ?? ""),
-    )
-    .join(", ");
-}
+// Parsing and S3 Helpers
 
-// Fetch a list of message IDs and their raw content
-export async function fetchMessages(
-  userId: string,
-  options: {
-    maxResults?: number;
-    since?: Date;
-    pageToken?: string;
-    allPages?: boolean;
-  } = {},
-) {
-  const { gmail, auth } = await createGmailClient(userId);
-  await auth.getAccessToken();
-
-  const { maxResults = 100, since, allPages = false } = options;
-  let { pageToken } = options;
-  let query = "in:inbox";
-  if (since) {
-    const sinceTimestamp = Math.floor(since.getTime() / 1000);
-    query += ` after:${sinceTimestamp}`;
-  }
-
-  const allMessageIds: { id: string; threadId: string }[] = [];
-
-  do {
-    const response = await gmail.users.messages.list({
-      userId: "me",
-      maxResults,
-      q: query,
-      pageToken,
-    });
-
-    const messageIds = response.data.messages ?? [];
-    for (const msg of messageIds) {
-      if (msg.id && msg.threadId) {
-        allMessageIds.push({ id: msg.id, threadId: msg.threadId });
-      }
-    }
-
-    pageToken = response.data.nextPageToken ?? undefined;
-  } while (allPages && pageToken);
-
-  const messagePromises = allMessageIds.map(({ id }) =>
-    gmail.users.messages.get({ userId: "me", id, format: "raw" }),
-  );
-
-  const messageResults = await Promise.allSettled(messagePromises);
-  const messages: GmailMessage[] = [];
-  for (const result of messageResults) {
-    if (result.status === "fulfilled" && result.value.data) {
-      messages.push(result.value.data as GmailMessage);
-    }
-  }
-
-  return messages;
-}
-
-// Fetch all message IDs for a user
-export async function fetchAllGmailMessageIds(
-  userId: string,
-): Promise<{ id: string; threadId: string }[]> {
-  const { gmail, auth } = await createGmailClient(userId);
-  await auth.getAccessToken();
-
-  let pageToken: string | undefined;
-  const allMessageIds: { id: string; threadId: string }[] = [];
-
-  do {
-    const response = await gmail.users.messages.list({
-      userId: "me",
-      q: "in:inbox", // Only fetch inbox messages for deletion check
-      pageToken,
-    });
-
-    const messageIds = response.data.messages ?? [];
-    for (const msg of messageIds) {
-      if (msg.id && msg.threadId) {
-        allMessageIds.push({ id: msg.id, threadId: msg.threadId });
-      }
-    }
-
-    pageToken = response.data.nextPageToken ?? undefined;
-  } while (pageToken);
-
-  return allMessageIds;
-}
-
-// Fetch a single message by its Gmail ID
-export async function getMessage(userId: string, gmailId: string) {
-  const { gmail, auth } = await createGmailClient(userId);
-  await auth.getAccessToken();
-
-  const messageDetail = await gmail.users.messages.get({
-    userId: "me",
-    id: gmailId,
-    format: "raw",
-  });
-
-  if (!messageDetail.data) throw new Error("Message not found");
-  return messageDetail.data as GmailMessage;
-}
-
-// Parse a raw email message
 export async function parseRawMessage(
   message: GmailMessage,
 ): Promise<FinalEmail> {
@@ -382,11 +332,46 @@ export async function parseRawMessage(
   };
 }
 
-// Get full, parsed email content by Gmail ID
-export async function getParsedEmailContent(
+async function uploadEmailBodyToS3(
   userId: string,
   gmailId: string,
-): Promise<FinalEmail> {
-  const message = await getMessage(userId, gmailId);
-  return parseRawMessage(message);
+  htmlBody: string,
+): Promise<string> {
+  const bucketName = process.env.S3_BUCKET_NAME;
+  if (!bucketName) throw new Error("S3_BUCKET_NAME is not defined");
+
+  const key = `emails/${userId}/${gmailId}.html`;
+  const command = new PutObjectCommand({
+    Bucket: bucketName,
+    Key: key,
+    Body: htmlBody,
+    ContentType: "text/html",
+  });
+
+  await s3.send(command);
+  return `https://${bucketName}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+}
+
+async function deleteEmailBodyFromS3(s3Url: string) {
+  const bucketName = process.env.S3_BUCKET_NAME;
+  if (!bucketName) throw new Error("S3_BUCKET_NAME is not defined");
+
+  const url = new URL(s3Url);
+  const key = url.pathname.substring(1);
+
+  const command = new DeleteObjectCommand({ Bucket: bucketName, Key: key });
+  await s3.send(command);
+}
+
+function formatAddress(
+  addressData: AddressObject | AddressObject[] | undefined,
+): string {
+  if (!addressData) return "";
+  const addresses = Array.isArray(addressData) ? addressData : [addressData];
+  return addresses
+    .flatMap((addrObj) => addrObj.value || [])
+    .map((addr) =>
+      addr.name ? `${addr.name} <${addr.address ?? ""}>` : (addr.address ?? ""),
+    )
+    .join(", ");
 }

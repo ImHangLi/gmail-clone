@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
       try {
         if (acc.userId) {
           const syncedEmails = await syncMessagesForUser(acc.userId);
-          syncedCount += syncedEmails.length;
+          syncedCount += syncedEmails.added.length;
         } else {
           console.warn(`Account found without a userId: ${acc.id}`);
         }

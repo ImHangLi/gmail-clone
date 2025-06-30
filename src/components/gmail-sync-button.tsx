@@ -13,10 +13,10 @@ export function GmailSyncButton() {
   const syncGmail = api.email.syncGmail.useMutation({
     onSuccess: (data) => {
       toast.success("Sync Complete", {
-        description: `Successfully synced ${data.count} new emails`,
+        description: `Successfully synced ${data.added} new emails`,
       });
-      void utils.email.getThreadList.invalidate();
-      void utils.email.getThreadById.invalidate();
+      void utils.thread.getThreadList.invalidate();
+      void utils.thread.getThreadById.invalidate();
     },
     onError: (error) => {
       if (error.data?.code === "UNAUTHORIZED") {
