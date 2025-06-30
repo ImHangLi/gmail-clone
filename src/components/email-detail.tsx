@@ -3,6 +3,7 @@ import { Button } from "./ui/button";
 import { api } from "~/trpc/react";
 import { AlertCircle, RefreshCw, ChevronDown, ChevronUp } from "lucide-react";
 import { EmailDetailSkeleton } from "./email-detail-skeleton";
+import { AttachmentButton } from "./attachment-button";
 
 
 
@@ -175,14 +176,11 @@ export function EmailDetailView({
                       <strong className="text-sm text-gray-600">
                         Attachments:
                       </strong>
-                      <ul className="mt-2 space-y-1">
-                        {emailContent.attachments.map((att, attIndex) => (
-                          <li key={attIndex} className="text-sm text-gray-500">
-                            📎 {att.filename} ({att.contentType},{" "}
-                            {Math.round(att.size / 1024)}KB)
-                          </li>
+                      <div className="mt-2 space-y-2">
+                        {emailContent.attachments.map((att) => (
+                          <AttachmentButton key={att.id} attachment={att} />
                         ))}
-                      </ul>
+                      </div>
                     </div>
                   )}
 

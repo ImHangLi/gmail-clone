@@ -116,6 +116,7 @@ export const attachment = createTable("attachment", {
   filename: text("filename").notNull(),
   contentType: text("content_type").notNull(),
   size: text("size").notNull(), // size in bytes
+  s3Url: text("s3_url"),
 
   createdAt: timestamp("created_at", { mode: "date" }).defaultNow(),
 });
