@@ -347,14 +347,14 @@ function formatAddress(
     .join(", ");
 }
 
-export async function sendMessage(
+export async function replyMessage(
   userId: string,
   options: {
     to: string;
     from: string;
     subject: string;
     body: string;
-    threadId?: string; // For threading replies
+    threadId: string;
   },
 ) {
   const userAccount = await db.query.account.findFirst({
@@ -365,6 +365,39 @@ export async function sendMessage(
     throw new Error("No Google account found for user to send message from.");
   }
 
+  return sendMessage(userAccount, options);
+}
+
+export async function forwardMessage(
+  userId: string,
+  options: {
+    to: string;
+    from: string;
+    subject: string;
+    body: string;
+  },
+) {
+  const userAccount = await db.query.account.findFirst({
+    where: and(eq(account.userId, userId), eq(account.providerId, "google")),
+  });
+
+  if (!userAccount) {
+    throw new Error("No Google account found for user to send message from.");
+  }
+
+  return sendMessage(userAccount, options);
+}
+
+async function sendMessage(
+  userAccount: typeof Account.$inferSelect,
+  options: {
+    to: string;
+    from: string;
+    subject: string;
+    body: string;
+    threadId?: string; // Replies only
+  },
+) {
   const { gmail } = await createGmailClient(userAccount);
 
   // Construct the raw email
@@ -397,9 +430,6 @@ export async function sendMessage(
   if (!response.data) {
     throw new Error("Failed to send email.");
   }
-
-  // TODO: Maybe change this to optimistic update? or wait for the push notification implementation.
-  void syncMessagesForUser(userId);
 
   return response.data;
 }

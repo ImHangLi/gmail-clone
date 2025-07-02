@@ -7,6 +7,7 @@ import { EmailDetailView } from "./email-detail";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import EmailListSkeleton from "./email-skeleton";
+import { extractNameFromEmail } from "~/lib/email-utils";
 
 export function EmailList() {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
@@ -219,22 +220,4 @@ function ClientSideFormattedDate({ date }: { date: Date }) {
 }
 
 // Helper function to extract name from email address
-function extractNameFromEmail(emailString: string | null): string {
-  if (!emailString) return "Unknown Sender";
 
-  // Check if it's in format "Name <email@domain.com>"
-  const nameRegex = /^(.+?)\s*<.*>$/;
-  const nameMatch = nameRegex.exec(emailString);
-  if (nameMatch?.[1]) {
-    return nameMatch[1].trim().replace(/^["']|["']$/g, ""); // Remove quotes if present
-  }
-
-  // If it's just an email address, extract the part before @
-  const emailRegex = /^([^@<]+)@/;
-  const emailMatch = emailRegex.exec(emailString);
-  if (emailMatch?.[1]) {
-    return emailMatch[1].trim();
-  }
-
-  return emailString.trim();
-}

@@ -1,52 +1,24 @@
 import { useState, useEffect } from "react";
 import { Button } from "./ui/button";
 import { api } from "~/trpc/react";
+import { EmailDetailSkeleton } from "./email-detail-skeleton";
+import { EmailDetailError } from "./email-detail-error";
 import {
-  AlertCircle,
-  RefreshCw,
   ChevronDown,
   ChevronUp,
   Reply,
+  ReplyAll,
   Forward,
 } from "lucide-react";
-import { EmailDetailSkeleton } from "./email-detail-skeleton";
 import { AttachmentButton } from "./attachment-button";
 import { EmailComposer } from "./email-composer";
-
-function EmailDetailError({
-  onBack,
-  onRetry,
-  error,
-}: {
-  onBack: () => void;
-  onRetry: () => void;
-  error?: string;
-}) {
-  return (
-    <div className="space-y-6">
-      <Button onClick={onBack} variant="outline">
-        ← Back to Inbox
-      </Button>
-
-      <div className="flex flex-col items-center justify-center rounded-lg border border-red-200 bg-red-50 p-12 text-center">
-        <AlertCircle className="mb-4 h-12 w-12 text-red-500" />
-        <h2 className="mb-2 text-lg font-semibold text-gray-900">
-          Failed to load email
-        </h2>
-        <p className="mb-4 max-w-md text-gray-600">
-          {error ??
-            "Unable to load email content. This may be due to a network issue."}
-        </p>
-        <div className="flex gap-2">
-          <Button onClick={onRetry} variant="outline">
-            <RefreshCw className="mr-2 h-4 w-4" />
-            Try Again
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
+import { SafeHtmlRenderer } from "./safe-html-renderer";
+import {
+  extractEmailAddress,
+  extractAllEmailAddresses,
+  formatSubject,
+  formatForwardBody,
+} from "~/lib/email-utils";
 
 export function EmailDetailView({
   threadId,
@@ -69,7 +41,7 @@ export function EmailDetailView({
   );
 
   const [expandedEmails, setExpandedEmails] = useState<Set<string>>(new Set());
-  const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [activeComposer, setActiveComposer] = useState<string | null>(null);
 
   useEffect(() => {
     if (emailsInThread && emailsInThread.length > 0) {
@@ -94,18 +66,6 @@ export function EmailDetailView({
       }
       return newExpanded;
     });
-  };
-
-  const extractEmailAddress = (from: string): string => {
-    const match = /<([^>]+)>/.exec(from);
-    return match ? (match[1] ?? "") : from;
-  };
-
-  const formatSubject = (subject: string): string => {
-    if (subject.startsWith("Re:")) {
-      return subject;
-    }
-    return `Re: ${subject}`;
   };
 
   if (isLoading) {
@@ -141,12 +101,18 @@ export function EmailDetailView({
       <div className="rounded-lg border border-gray-200 bg-white p-8 shadow-sm">
         {emailsInThread.map((emailContent) => {
           const isExpanded = expandedEmails.has(emailContent.id);
-          const isReplying = replyingTo === emailContent.id;
+          const isReplying = activeComposer === `reply-${emailContent.id}`;
+          const isReplyingAll =
+            activeComposer === `reply-all-${emailContent.id}`;
+          const isForwarding = activeComposer === `forward-${emailContent.id}`;
+          const isComposing = isReplying || isReplyingAll || isForwarding;
 
           return (
             <div
               key={emailContent.id}
-              className={`mb-4 overflow-hidden rounded-md border border-gray-200 last:mb-0 ${isExpanded ? "bg-white" : "bg-gray-50"}`}
+              className={`mb-4 overflow-hidden rounded-md border border-gray-200 last:mb-0 ${
+                isExpanded ? "bg-white" : "bg-gray-50"
+              }`}
             >
               <div
                 className="flex cursor-pointer items-center justify-between bg-white p-4 hover:bg-gray-100"
@@ -214,24 +180,57 @@ export function EmailDetailView({
                   <div className="mt-6 flex space-x-2">
                     <Button
                       variant="outline"
-                      onClick={() => setReplyingTo(emailContent.id)}
+                      onClick={() =>
+                        setActiveComposer(`reply-${emailContent.id}`)
+                      }
                     >
                       <Reply className="mr-2 h-4 w-4" />
                       Reply
                     </Button>
-                    <Button variant="outline">
+                    <Button
+                      variant="outline"
+                      onClick={() =>
+                        setActiveComposer(`reply-all-${emailContent.id}`)
+                      }
+                    >
+                      <ReplyAll className="mr-2 h-4 w-4" />
+                      Reply All
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() =>
+                        setActiveComposer(`forward-${emailContent.id}`)
+                      }
+                    >
                       <Forward className="mr-2 h-4 w-4" />
                       Forward
                     </Button>
                   </div>
 
-                  {isReplying && (
+                  {isComposing && (
                     <div className="mt-4">
                       <EmailComposer
-                        to={extractEmailAddress(emailContent.from ?? "")}
-                        subject={formatSubject(emailContent.subject ?? "")}
-                        threadId={emailContent.threadId}
-                        onClose={() => setReplyingTo(null)}
+                        key={activeComposer}
+                        to={
+                          isReplying
+                            ? [extractEmailAddress(emailContent.from ?? "")]
+                            : isReplyingAll
+                            ? extractAllEmailAddresses(emailContent)
+                            : []
+                        }
+                        subject={formatSubject(
+                          emailContent.subject ?? "",
+                          isForwarding ? "Fwd:" : "Re:",
+                        )}
+                        body={
+                          isForwarding
+                            ? formatForwardBody(emailContent)
+                            : undefined
+                        }
+                        threadId={
+                          isForwarding ? undefined : emailContent.threadId
+                        }
+                        onClose={() => setActiveComposer(null)}
                       />
                     </div>
                   )}
@@ -241,19 +240,6 @@ export function EmailDetailView({
           );
         })}
       </div>
-    </div>
-  );
-}
-
-function SafeHtmlRenderer({ html }: { html: string }) {
-  return (
-    <div className="h-full w-full">
-      <iframe
-        srcDoc={html}
-        sandbox="allow-same-origin"
-        className="h-full w-full border-none"
-        style={{ minHeight: "480px" }}
-      />
     </div>
   );
 }

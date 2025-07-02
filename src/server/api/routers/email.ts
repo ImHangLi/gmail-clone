@@ -2,7 +2,17 @@ import { createTRPCRouter, protectedProcedure } from "../trpc";
 import { eq, and } from "drizzle-orm";
 import { email, user } from "~/server/db/schema";
 import { z } from "zod";
-import { syncMessagesForUser, sendMessage } from "~/lib/gmail";
+import { syncMessagesForUser, replyMessage, forwardMessage } from "~/lib/gmail";
+
+const messageSchema = z.object({
+  to: z.array(z.string().email()),
+  subject: z.string(),
+  body: z.string(),
+});
+
+const replyMessageSchema = messageSchema.extend({
+  threadId: z.string(),
+});
 
 export const emailRouter = createTRPCRouter({
   // Sync latest emails from Gmail
@@ -47,15 +57,8 @@ export const emailRouter = createTRPCRouter({
       }
     }),
 
-  sendMessage: protectedProcedure
-    .input(
-      z.object({
-        to: z.string().email(),
-        subject: z.string(),
-        body: z.string(),
-        threadId: z.string().optional(),
-      }),
-    )
+  replyMessage: protectedProcedure
+    .input(replyMessageSchema)
     .mutation(async ({ ctx, input }) => {
       try {
         const fromUser = await ctx.db.query.user.findFirst({
@@ -66,8 +69,33 @@ export const emailRouter = createTRPCRouter({
           throw new Error("Could not find user email to send from.");
         }
 
-        const result = await sendMessage(ctx.session.user.id, {
+        const result = await replyMessage(ctx.session.user.id, {
           ...input,
+          to: input.to.join(", "),
+          from: fromUser.email,
+        });
+        return { success: true, messageId: result.id };
+      } catch (error) {
+        console.error("Failed to send email:", error);
+        throw new Error("Failed to send email.");
+      }
+    }),
+
+  forwardMessage: protectedProcedure
+    .input(messageSchema)
+    .mutation(async ({ ctx, input }) => {
+      try {
+        const fromUser = await ctx.db.query.user.findFirst({
+          where: eq(user.id, ctx.session.user.id),
+        });
+
+        if (!fromUser?.email) {
+          throw new Error("Could not find user email to send from.");
+        }
+
+        const result = await forwardMessage(ctx.session.user.id, {
+          ...input,
+          to: input.to.join(", "),
           from: fromUser.email,
         });
         return { success: true, messageId: result.id };
